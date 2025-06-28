@@ -1,10 +1,7 @@
 import streamlit as st
 import openai
-from PIL import Image
-import pytesseract
-import pdf2image
+import fitz  # PyMuPDF
 import io
-import base64
 import requests
 from datetime import datetime
 import os
@@ -86,65 +83,81 @@ class HealthCheckupAnalyzer:
         if 'openai_api_key' not in st.session_state:
             st.session_state.openai_api_key = "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"
     
-    def extract_text_from_image(self, image) -> str:
-        """Extract text from uploaded image using OCR"""
-        try:
-            # Convert PIL image to text using pytesseract
-            text = pytesseract.image_to_string(image, lang='eng+hin')
-            return text
-        except Exception as e:
-            st.error(f"Error extracting text from image: {str(e)}")
-            return ""
-    
     def extract_text_from_pdf(self, pdf_file) -> str:
-        """Extract text from uploaded PDF"""
+        """Extract text from PDF using PyMuPDF"""
         try:
-            # Convert PDF to images
-            images = pdf2image.convert_from_bytes(pdf_file.read())
+            # Read PDF file bytes
+            pdf_bytes = pdf_file.read()
+            
+            # Open PDF document
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             
             extracted_text = ""
-            for image in images:
-                # Extract text from each page
-                page_text = pytesseract.image_to_string(image, lang='eng+hin')
-                extracted_text += page_text + "\n\n"
+            page_count = len(doc)
             
-            return extracted_text
+            # Extract text from each page
+            for page_num in range(page_count):
+                page = doc[page_num]
+                page_text = page.get_text()
+                
+                if page_text.strip():  # Only add non-empty pages
+                    extracted_text += f"\n--- Page {page_num + 1} ---\n"
+                    extracted_text += page_text + "\n"
+            
+            doc.close()
+            
+            return extracted_text.strip()
+            
         except Exception as e:
             st.error(f"Error extracting text from PDF: {str(e)}")
             return ""
     
     def analyze_health_report(self, text: str, language: str) -> Dict[str, Any]:
-        """Analyze health report using OpenAI"""
+        """Analyze health report using OpenAI GPT"""
         try:
             if not st.session_state.openai_api_key:
                 st.error("Please enter your OpenAI API key in the sidebar.")
+                return None
+            
+            if not text or not text.strip():
+                st.error("No text extracted from PDF to analyze.")
                 return None
             
             client = openai.OpenAI(api_key=st.session_state.openai_api_key)
             
             language_instruction = self.language_prompts.get(language, self.language_prompts["English"])
             
-            prompt = f"""
-            You are a medical AI assistant specializing in health report analysis. 
-            Please analyze the following health checkup report and provide:
+            prompt = f"""You are a medical AI assistant specializing in health report analysis. 
 
-            1. **SUMMARY**: A comprehensive summary of the test results
-            2. **KEY FINDINGS**: Important findings and abnormal values
-            3. **HEALTH STATUS**: Overall health assessment
-            4. **LIFESTYLE RECOMMENDATIONS**: Specific lifestyle changes needed
-            5. **DIETARY SUGGESTIONS**: Nutritional recommendations
-            6. **EXERCISE RECOMMENDATIONS**: Physical activity suggestions
-            7. **FOLLOW-UP ACTIONS**: When to consult doctors or repeat tests
-            8. **PREVENTIVE MEASURES**: Steps to prevent future health issues
+Please carefully analyze the following health checkup report text and provide:
 
-            {language_instruction}
+1. **SUMMARY**: A comprehensive summary of all test results across all pages
+2. **KEY FINDINGS**: Important findings and abnormal values (highlight which are outside normal ranges)
+3. **HEALTH STATUS**: Overall health assessment based on all available data
+4. **LIFESTYLE RECOMMENDATIONS**: Specific lifestyle changes needed based on the results
+5. **DIETARY SUGGESTIONS**: Nutritional recommendations tailored to the findings
+6. **EXERCISE RECOMMENDATIONS**: Physical activity suggestions appropriate for the health status
+7. **FOLLOW-UP ACTIONS**: Which tests to repeat, when to consult doctors, and urgency levels
+8. **PREVENTIVE MEASURES**: Steps to prevent future health issues
 
-            Health Report Text:
-            {text}
+{language_instruction}
 
-            Please provide a detailed, structured analysis that's easy to understand for a non-medical person.
-            Include specific actionable recommendations.
-            """
+Please analyze the health report text below. Look for:
+- Lab test results and reference ranges
+- Vital signs and measurements
+- Any numerical values and their normal ranges
+- Doctor's notes or recommendations
+- Test dates and patient information
+- Abnormal or concerning values
+
+Provide a detailed, structured analysis that's easy to understand for a non-medical person.
+Include specific actionable recommendations with clear priorities.
+If any values are critical or require immediate attention, highlight them clearly.
+
+Health Report Text:
+{text}
+
+Please provide a thorough analysis based on the extracted text content."""
 
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -152,16 +165,21 @@ class HealthCheckupAnalyzer:
                     {"role": "system", "content": "You are a helpful medical AI assistant that provides health report analysis and recommendations."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=2000,
+                max_tokens=2500,
                 temperature=0.7
             )
             
             analysis = response.choices[0].message.content
             
+            # Count pages from text (rough estimate)
+            pages_analyzed = text.count("--- Page") if "--- Page" in text else 1
+            
             return {
                 "analysis": analysis,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "language": language
+                "language": language,
+                "pages_analyzed": pages_analyzed,
+                "extracted_text_length": len(text)
             }
             
         except Exception as e:
@@ -702,10 +720,12 @@ def main():
         # Features info
         st.markdown("""
         ### 🎯 Features
-        - 📤 Upload health reports (PDF/Image)
-        - 🤖 AI-powered analysis
-        - 🌐 Multi-language support
-        - 📊 Detailed recommendations
+        - 📄 Upload PDF health reports
+        - 🔤 PyMuPDF text extraction
+        - 🤖 GPT-3.5-turbo analysis
+        - 🌐 Multi-language support  
+        - 📊 Multi-page text analysis
+        - 📋 Detailed recommendations
         - 📄 Beautiful HTML reports
         - 🖨️ Print-to-PDF ready
         - 👀 Live preview
@@ -723,12 +743,12 @@ def main():
         """, unsafe_allow_html=True)
     
     # File upload section
-    st.header("📤 Upload Health Report")
+    st.header("📤 Upload Health Report PDF")
     
     uploaded_file = st.file_uploader(
-        "Choose your health checkup report",
-        type=['pdf', 'png', 'jpg', 'jpeg'],
-        help="Upload your health report in PDF or image format"
+        "Choose your health checkup report (PDF only)",
+        type=['pdf'],
+        help="Upload your health report in PDF format. PyMuPDF will extract text from all pages."
     )
     
     if uploaded_file is not None:
@@ -747,36 +767,37 @@ def main():
                 st.write(f"**{key}:** {value}")
         
         with col2:
-            # Display preview
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Image", use_column_width=True)
-            else:
-                st.write("📄 PDF file uploaded successfully")
+            st.write("📄 PDF file uploaded successfully")
+            st.info("🤖 PyMuPDF will extract text from all pages for AI analysis!")
         
-        # Extract text
-        with st.spinner("🔍 Extracting text from your report..."):
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                extracted_text = analyzer.extract_text_from_image(image)
-            else:
-                extracted_text = analyzer.extract_text_from_pdf(uploaded_file)
+        # Extract text from PDF
+        with st.spinner("📄 Extracting text from PDF..."):
+            extracted_text = analyzer.extract_text_from_pdf(uploaded_file)
         
-        if extracted_text:
-            # Show extracted text (collapsible)
-            with st.expander("📝 Extracted Text Preview"):
-                st.text_area("Extracted Content", extracted_text, height=200, disabled=True)
+        if extracted_text and extracted_text.strip():
+            st.success(f"✅ Successfully extracted text from PDF ({len(extracted_text)} characters)")
+            
+            # Show extracted text preview
+            with st.expander("📝 Preview Extracted Text"):
+                st.text_area(
+                    "Extracted Content", 
+                    extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""), 
+                    height=300, 
+                    disabled=True
+                )
+                if len(extracted_text) > 2000:
+                    st.info(f"Showing first 2000 characters. Total extracted: {len(extracted_text)} characters")
             
             # Analyze button
             if st.button("🔬 Analyze Health Report", type="primary"):
                 if not st.session_state.openai_api_key:
                     st.error("Please enter your OpenAI API key in the sidebar.")
                 else:
-                    with st.spinner("🤖 Analyzing your health report..."):
+                    with st.spinner("🤖 Analyzing your health report with AI..."):
                         analysis_result = analyzer.analyze_health_report(extracted_text, language)
                     
                     if analysis_result:
-                        st.success("✅ Analysis completed successfully!")
+                        st.success(f"✅ Analysis completed successfully! Analyzed {analysis_result['pages_analyzed']} pages ({analysis_result['extracted_text_length']} characters).")
                         
                         # Display analysis
                         st.markdown('<div class="analysis-result">', unsafe_allow_html=True)
@@ -811,14 +832,15 @@ def main():
                                 if st.button("👀 Preview Report", type="secondary"):
                                     st.session_state.show_preview = True
                             
-                            st.markdown("""
+                            st.markdown(f"""
                             <div class="success-box">
                                 <b>✅ Success!</b><br/>
                                 Your health report analysis is ready! 
                                 <br><br>
                                 <b>📥 Download HTML:</b> Save the file and open in your browser<br/>
                                 <b>🖨️ Print to PDF:</b> Open the HTML file → Press Ctrl+P → Save as PDF<br/>
-                                <b>👀 Preview:</b> See how the report looks before downloading
+                                <b>👀 Preview:</b> See how the report looks before downloading<br/>
+                                <b>📊 Analysis:</b> {analysis_result['pages_analyzed']} pages analyzed with GPT-3.5-turbo
                             </div>
                             """, unsafe_allow_html=True)
                             
@@ -830,7 +852,7 @@ def main():
                                 # Display the HTML in an iframe-like container
                                 st.components.v1.html(html_content, height=800, scrolling=True)
         else:
-            st.error("❌ Could not extract text from the uploaded file. Please ensure the image/PDF is clear and readable.")
+            st.error("❌ Could not extract text from PDF. The PDF might be image-based, password-protected, or corrupted. Please ensure the PDF contains extractable text.")
     
     # Footer
     st.divider()
