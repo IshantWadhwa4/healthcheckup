@@ -81,7 +81,7 @@ class HealthCheckupAnalyzer:
     def setup_openai(self):
         """Setup OpenAI API key"""
         if 'openai_api_key' not in st.session_state:
-            st.session_state.openai_api_key = "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"
+            st.session_state.openai_api_key = ""
     
     def extract_text_from_pdf(self, pdf_file) -> str:
         """Extract text from PDF using PyMuPDF"""
