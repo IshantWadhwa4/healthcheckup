@@ -1,6 +1,6 @@
 import streamlit as st
 import openai
-import fitz  # PyMuPDF
+import pdfplumber  # PDF text extraction with layout preservation
 import io
 import requests
 from datetime import datetime
@@ -98,33 +98,41 @@ class HealthCheckupAnalyzer:
             st.session_state.openai_api_key = ""
     
     def extract_text_from_pdf(self, pdf_file) -> str:
-        """Extract text from PDF using PyMuPDF"""
+        """Extract text from PDF using pdfplumber with layout preservation and table detection"""
         try:
             # Read PDF file bytes
             pdf_bytes = pdf_file.read()
-            
-            # Open PDF document
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            
             extracted_text = ""
-            page_count = len(doc)
             
-            # Extract text from each page
-            for page_num in range(page_count):
-                page = doc[page_num]
-                page_text = page.get_text()
+            # Open PDF with pdfplumber
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                page_count = len(pdf.pages)
                 
-                if page_text.strip():  # Only add non-empty pages
-                    extracted_text += f"\n--- Page {page_num + 1} ---\n"
-                    extracted_text += page_text + "\n"
-            
-            doc.close()
+                for page_num, page in enumerate(pdf.pages):
+                    # Extract text with layout preservation
+                    page_text = page.extract_text()
+                    
+                    if page_text and page_text.strip():
+                        extracted_text += f"\n--- Page {page_num + 1} ---\n"
+                        extracted_text += page_text + "\n"
+                        
+                        # Also extract tables if any
+                        tables = page.extract_tables()
+                        if tables:
+                            extracted_text += "\n--- Tables on this page ---\n"
+                            for table_num, table in enumerate(tables):
+                                extracted_text += f"Table {table_num + 1}:\n"
+                                for row in table:
+                                    if row and any(cell for cell in row if cell):
+                                        row_text = " | ".join(str(cell) if cell else "" for cell in row)
+                                        extracted_text += row_text + "\n"
+                                extracted_text += "\n"
             
             return extracted_text.strip()
             
         except Exception as e:
             st.error(f"Error extracting text from PDF: {str(e)}")
-            return ""
+            return ""    
     
     def analyze_health_report(self, text: str, language: str) -> Dict[str, Any]:
         """Analyze health report using OpenAI GPT"""
@@ -1164,16 +1172,19 @@ def main():
         st.markdown("""
         ### 🎯 Features
         - 📄 Upload PDF health reports
-        - 🔤 PyMuPDF text extraction
+        - 🔤 **pdfplumber extraction**: Superior layout preservation
+        - 📊 **Automatic table detection** and extraction
         - 🤖 GPT-3.5-turbo analysis
         - 🌐 Multi-language support  
-        - 📊 Multi-page text analysis
-        - 📋 Detailed recommendations
+        - 📋 Multi-page text analysis
+        - 💡 Detailed recommendations
         - 📄 Beautiful HTML reports
         - 🖨️ Print-to-PDF ready
         - 👀 Live preview
-        - 💡 Lifestyle suggestions
         """)
+        
+        # Extraction method info
+        st.info("📊 pdfplumber provides excellent layout preservation and table detection!")
     
     # Main content - Continue without blocking if no API key
     
@@ -1183,7 +1194,7 @@ def main():
     uploaded_file = st.file_uploader(
         "Choose your health checkup report (PDF only)",
         type=['pdf'],
-        help="Upload your health report in PDF format. PyMuPDF will extract text from all pages."
+        help="Upload your health report in PDF format. pdfplumber will extract text and tables from all pages."
     )
     
     if uploaded_file is not None:
@@ -1203,10 +1214,10 @@ def main():
         
         with col2:
             st.write("📄 PDF file uploaded successfully")
-            st.info("🤖 PyMuPDF will extract text from all pages for AI analysis!")
+            st.info("🤖 pdfplumber will extract text and tables from all pages for AI analysis!")
         
-        # Extract text from PDF
-        with st.spinner("📄 Extracting text from PDF..."):
+        # Extract text from PDF using pdfplumber
+        with st.spinner("📄 Extracting text and tables from PDF using pdfplumber..."):
             extracted_text = analyzer.extract_text_from_pdf(uploaded_file)
         
         if extracted_text and extracted_text.strip():
